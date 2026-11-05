@@ -968,6 +968,7 @@ impl Game<'_> {
             }
         }
         let uuid = self.level.player_uuid;
+        let level_id = self.dim.id();
         let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
         let mut events = Vec::new();
         let mut mobs = std::mem::take(&mut self.mobs);
@@ -1103,7 +1104,12 @@ impl Game<'_> {
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
+                // `horizon-report`'s cost by mob type (tick_profile.rs).
+                let sampled = super::tick_profile::start().map(|t| (t, m.kind.clone()));
                 let kept = m.tick(&w, &mut scratch, &mut events);
+                if let Some((started, kind)) = sampled {
+                    super::tick_profile::add(level_id, &kind, started);
+                }
                 // A killed mob's body is removed: its effects that act on
                 // death run (`LivingEntity.remove` with KILLED).
                 if !kept && !m.alive() && !m.removed && !m.extra.effects.is_empty() {
