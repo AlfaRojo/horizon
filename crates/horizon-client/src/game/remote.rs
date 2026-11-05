@@ -790,8 +790,14 @@ impl Game<'_> {
         let mut state = entity_sound_state(id, player, &self.mobs, &r.entities)?;
         // Vehicles, projectiles and other simulated objects may have moved since
         // the last tracking packet, just as the mob interpolation has.
-        if let Some(position) = self
-            .level_entity(id)
+        // The dragon: `spawn_entity` keeps a copy of it in `mobs` that `move_entity` leaves where it
+        // spawned, so its own state goes first.
+        let dragon = u32::try_from(id)
+            .ok()
+            .filter(|id| self.dragon.as_ref().is_some_and(|d| d.id == *id))
+            .map(super::commands::Target::Dragon);
+        if let Some(position) = dragon
+            .or_else(|| self.level_entity(id))
             .and_then(|target| self.target_position(target))
         {
             state.position = position;
