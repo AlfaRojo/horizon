@@ -33,7 +33,7 @@ pub fn contents(body: &[u8], threshold: Option<usize>) -> Result<Vec<u8>> {
         Some(_) => {
             let mut v = Vec::with_capacity(body.len() / 2 + 8);
             write_varint(&mut v, body.len() as i32);
-            let mut z = ZlibEncoder::new(v, Compression::default());
+            let mut z = ZlibEncoder::new(v, Compression::new(2));
             z.write_all(body)?;
             z.finish()?
         }
