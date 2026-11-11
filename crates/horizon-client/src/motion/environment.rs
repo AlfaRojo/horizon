@@ -193,6 +193,71 @@ pub(crate) fn fire_contact(
     }
     damage
 }
+/// `LavaCauldronBlock.getEntityInsideCollisionShape`: the cauldron's solid
+/// shape plus its contents (12 pixels wide, from 4 through 15 pixels high).
+/// In particular, the rim and feet count too, but air above the contents does not.
+/// Returns how many cauldrons the box is in: each runs `entityInside`
+/// (CLEAR_FREEZE, LAVA_IGNITE and `lavaHurt`) for items and mobs alike.
+pub(crate) fn lava_cauldron_contacts(
+    world: &World,
+    registry: &horizon_world::registry::BlockRegistry,
+    bounds: Aabb,
+) -> usize {
+    use horizon_core::geometry::ShapeOp;
+    static SHAPE: std::sync::OnceLock<VoxelShape> = std::sync::OnceLock::new();
+    let epsilon = f64::from(1e-5_f32);
+    let mut contacts = 0;
+    let candidates = bounds.deflate(Vec3::new(epsilon, epsilon, epsilon));
+    for x in candidates.min_position().x.floor() as i32..=candidates.max_position().x.floor() as i32
+    {
+        for y in
+            candidates.min_position().y.floor() as i32..=candidates.max_position().y.floor() as i32
+        {
+            for z in candidates.min_position().z.floor() as i32
+                ..=candidates.max_position().z.floor() as i32
+            {
+                if !registry
+                    .state(world.block(x, y, z))
+                    .is_some_and(|s| s.name == "minecraft:lava_cauldron")
+                {
+                    continue;
+                }
+                let shape = SHAPE.get_or_init(|| {
+                    let cuboid = |x0, y0, z0, x1, y1, z1| {
+                        VoxelShape::from_box(Aabb::new(
+                            Vec3::new(x0 / 16.0, y0 / 16.0, z0 / 16.0),
+                            Vec3::new(x1 / 16.0, y1 / 16.0, z1 / 16.0),
+                        ))
+                        .expect("valid cauldron box")
+                    };
+                    let mut solid = VoxelShape::block();
+                    // AbstractCauldronBlock.SHAPE: the openings under its feet
+                    // and its hollow centre are cut out of the unit block.
+                    for hole in [
+                        cuboid(0.0, 0.0, 4.0, 16.0, 3.0, 12.0),
+                        cuboid(4.0, 0.0, 0.0, 12.0, 3.0, 16.0),
+                        cuboid(2.0, 0.0, 2.0, 14.0, 3.0, 14.0),
+                        cuboid(2.0, 4.0, 2.0, 14.0, 16.0, 14.0),
+                    ] {
+                        solid = solid
+                            .join(&hole, ShapeOp::ONLY_FIRST)
+                            .expect("valid cauldron cutout");
+                    }
+                    solid
+                        .join(&cuboid(2.0, 4.0, 2.0, 14.0, 15.0, 14.0), ShapeOp::OR)
+                        .expect("valid filled cauldron")
+                });
+                let local = bounds.move_by(Vec3::new(-f64::from(x), -f64::from(y), -f64::from(z)));
+                // Only block enumeration uses the deflated box. The actual
+                // shape contact follows Entity.collidedWithShapeMovingFrom.
+                if local.collided_along_vector(Vec3::ZERO, shape.boxes()) {
+                    contacts += 1;
+                }
+            }
+        }
+    }
+    contacts
+}
 /// `CactusBlock.entityInside`: the box (deflated by `1.0E-5`, as in
 /// `Entity.checkInsideBlocks`) touches a cactus; its inside shape is the
 /// whole block.
@@ -395,5 +460,57 @@ mod fire_ignition_tests {
             assert!(ticks < 0);
         }
         assert_eq!(ignite_contact(ticks, true, &mut r, 0.4), 64);
+    }
+}
+
+#[cfg(test)]
+mod lava_cauldron_tests {
+    use super::*;
+    use horizon_world::nbt::Tag;
+    use horizon_world::registry::{BlockRegistry, BlockStateId};
+    use std::sync::Arc;
+
+    /// #15206: an adult chicken (0.4 wide, 0.7 high) under a lava cauldron
+    /// pokes into it from a slab (top 1.2: the cauldron's floor plate, 3 to 4
+    /// pixels) or a stonecutter (top 1.2625: the lava over the floor), and
+    /// burns; a baby (0.35 high) or one on the floor does not reach it.
+    #[test]
+    fn a_chicken_under_a_lava_cauldron_touches_it_once_grown() {
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![
+                    Tag::compound([("id", Tag::String("minecraft:air".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:lava_cauldron".into()))]),
+                ]),
+            ),
+            (
+                "defaults",
+                Tag::compound([
+                    ("minecraft:air", Tag::Int(0)),
+                    ("minecraft:lava_cauldron", Tag::Int(1)),
+                ]),
+            ),
+        ]))
+        .unwrap();
+        let mut world = World::new(BlockStateId(0), 0);
+        world
+            .chunks
+            .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+        world.set(0, 65, 0, BlockStateId(1)).unwrap();
+        let chicken = |feet: f64, height: f64| {
+            Aabb::new(
+                Vec3::new(0.3, feet, 0.3),
+                Vec3::new(0.7, feet + height, 0.7),
+            )
+        };
+        let contacts = |b| lava_cauldron_contacts(&world, &registry, b);
+        assert_eq!(contacts(chicken(64.5, 0.7)), 1, "on a slab");
+        assert_eq!(contacts(chicken(64.5625, 0.7)), 1, "on a stonecutter");
+        assert_eq!(contacts(chicken(64.0, 0.7)), 0, "on the floor");
+        assert_eq!(contacts(chicken(64.5, 0.35)), 0, "a chick on a slab");
+        // Inside the hollow above the lava, nothing.
+        assert_eq!(contacts(chicken(65.95, 0.04)), 0);
     }
 }

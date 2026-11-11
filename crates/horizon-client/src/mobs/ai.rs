@@ -17,6 +17,7 @@ use super::{
 };
 use crate::blocks::Fluid;
 use crate::breathing::{Breath, breathe, drown};
+use crate::motion::environment;
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
     random::{LegacyRandom, RandomSource},
@@ -1241,9 +1242,10 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     if m.species() == Species::Drowned {
         super::undead::drowned_update_swimming(m, w);
     }
-    let fire = crate::motion::environment::fire_contact(w.world, w.registry, m.bounds());
+    let fire = environment::fire_contact(w.world, w.registry, m.bounds());
+    let cauldron = environment::lava_cauldron_contacts(w.world, w.registry, m.bounds()) > 0;
     let contact_at = m.position;
-    if fire > 0.0 {
+    if fire > 0.0 || cauldron {
         m.ticks_frozen = 0;
     }
     // Entity.baseTick counts burning damage and the fire timer before
@@ -1374,10 +1376,10 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     // resets the old position) leaves aiStep's scan at the landing spot: the
     // fire and lava there, not where the tick began.
     let (fire, lava) = if m.position == contact_at {
-        (fire, m.fluids.in_lava)
+        (fire, m.fluids.in_lava || cauldron)
     } else {
         (
-            crate::motion::environment::fire_contact(w.world, w.registry, m.bounds()),
+            environment::fire_contact(w.world, w.registry, m.bounds()),
             touches_lava(m, w),
         )
     };
@@ -1422,9 +1424,7 @@ fn freeze_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         hurt(m, w, events, 1.0, Damage::of(DamageKind::Freeze));
     }
 }
-/// Whether the mob's box (shrunk by `1.0E-5`, as in `Entity.checkInsideBlocks`)
-/// touches powder snow.
-/// Whether the mob's box (shrunk by `1.0E-5`) touches a lava block: the
+/// Whether the mob's box (shrunk by `1.0E-5`) touches a lava block or a lava cauldron: the
 /// LAVA_IGNITE contact read where a teleport landed, whose own fluid check
 /// (`Enderman.canRandomlyTeleportTo`, a shulker's empty spot) keeps lava
 /// from the feet.
@@ -1440,7 +1440,7 @@ fn touches_lava(m: &Mob, w: &MobWorld) -> bool {
             }
         }
     }
-    false
+    environment::lava_cauldron_contacts(w.world, w.registry, m.bounds()) > 0
 }
 pub(super) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
     let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
