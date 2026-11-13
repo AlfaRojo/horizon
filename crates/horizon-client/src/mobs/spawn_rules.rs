@@ -190,7 +190,11 @@ fn immune_tag(s: Species) -> Option<&'static str> {
 }
 /// `BlockState.isValidSpawn(level, pos, type)` for the block at a position.
 pub fn is_valid_spawn<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z: i32) -> bool {
-    if name(l, x, y, z) == "minecraft:magma_block" {
+    valid_spawn_state(s, l, l.state(x, y, z))
+}
+/// [`is_valid_spawn`] for a state the caller already read.
+fn valid_spawn_state<L: SpawnLevel>(s: Species, l: &L, st: BlockStateId) -> bool {
+    if &*l.facts().get(st).name == "minecraft:magma_block" {
         return fire_immune(s);
     }
     let bit = match s {
@@ -198,16 +202,20 @@ pub fn is_valid_spawn<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z: i32) 
         Species::PolarBear => data::VALID_SPAWN_ICE,
         _ => data::VALID_SPAWN,
     };
-    flags(l, x, y, z) & bit != 0
+    l.mob_data().state(st).flags & bit != 0
 }
 /// `NaturalSpawner.isValidEmptySpawnBlock` for an entity type.
 pub fn is_valid_empty_spawn<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z: i32) -> bool {
+    valid_empty_spawn_state(s, l, l.state(x, y, z))
+}
+/// [`is_valid_empty_spawn`] for a state the caller already read.
+fn valid_empty_spawn_state<L: SpawnLevel>(s: Species, l: &L, st: BlockStateId) -> bool {
     // The exported flag is the zombie's answer; only blocks a zombie finds
     // dangerous can answer differently for another type.
-    if flags(l, x, y, z) & data::VALID_EMPTY_SPAWN != 0 {
+    if l.mob_data().state(st).flags & data::VALID_EMPTY_SPAWN != 0 {
         return true;
     }
-    let f = l.facts().get(l.state(x, y, z));
+    let f = l.facts().get(st);
     let block = &*f.name;
     let burning = l.block_tag("minecraft:fire", block)
         || block == "minecraft:lava"
@@ -239,9 +247,10 @@ pub fn is_spawn_position_ok<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z:
     }
     match placement {
         data::Placement::OnGround => {
-            is_valid_spawn(s, l, x, y - 1, z)
-                && is_valid_empty_spawn(s, l, x, y, z)
-                && is_valid_empty_spawn(s, l, x, y + 1, z)
+            // One read per cell; nothing writes the level during the check.
+            valid_spawn_state(s, l, l.state(x, y - 1, z))
+                && valid_empty_spawn_state(s, l, l.state(x, y, z))
+                && valid_empty_spawn_state(s, l, l.state(x, y + 1, z))
         }
         data::Placement::InWater => {
             fluid(l, x, y, z) == Fluid::Water
@@ -371,7 +380,9 @@ pub fn check_spawn_rules<L: SpawnLevel>(
             if raw_brightness(l, x, y, z, l.sky_darken()) > random.next_int_bound(4).unwrap_or(0) {
                 return false;
             }
-            tag(l, "minecraft:bats_spawnable_on", x, y - 1, z) && mob_rules(s, l, reason, x, y, z)
+            let below = l.state(x, y - 1, z);
+            l.block_tag("minecraft:bats_spawnable_on", &l.facts().get(below).name)
+                && (reason.is_spawner() || valid_spawn_state(s, l, below))
         }
         S::Blaze | S::Breeze | S::Zoglin => mob_rules(s, l, reason, x, y, z),
         S::Camel => tag(l, "minecraft:camels_spawnable_on", x, y - 1, z) && bright(l, x, y, z),
@@ -746,6 +757,50 @@ mod light_draw_tests {
                         "{type_id}"
                     );
                 }
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod position_ok_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+
+    /// `isSpawnPositionOk` on the ground: the block below must be a valid spawn
+    /// (magma only for fire-immune types), the two cells above empty enough.
+    #[test]
+    fn ground_placement_verdicts_per_cell_state() {
+        with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let mut set = |x: i32, y: i32, name: &str| {
+                    world
+                        .set(x, y, 0, registry.default_state(name).unwrap())
+                        .unwrap();
+                };
+                set(0, 59, "minecraft:stone");
+                set(1, 59, "minecraft:magma_block");
+                set(2, 59, "minecraft:stone");
+                set(2, 60, "minecraft:lava");
+                set(3, 59, "minecraft:stone");
+                set(3, 61, "minecraft:stone");
+                set(4, 59, "minecraft:stone");
+                set(4, 60, "minecraft:cactus");
+            },
+            |w, _| {
+                let ok = |s, x| is_spawn_position_ok(s, w, x, 60, 0);
+                assert!(ok(Species::Zombie, 0));
+                assert!(!ok(Species::Zombie, 1), "magma below, not fire immune");
+                assert!(ok(Species::Blaze, 1), "magma below, fire immune");
+                assert!(!ok(Species::Zombie, 2), "lava at the feet");
+                assert!(!ok(Species::Zombie, 3), "solid block at the head");
+                assert!(!ok(Species::Zombie, 4), "cactus at the feet");
+                assert!(!ok(Species::Zombie, 5), "air below");
             },
         );
     }
