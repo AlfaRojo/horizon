@@ -1238,5 +1238,6 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Am leschte Build, op Horizon {commit} fir {mods}, net op {horizon}",
   "In the last build, on {horizon}": "Am leschte Build, op {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "No instance {id}: it was removed": "No instance {id}: it was removed"
 }

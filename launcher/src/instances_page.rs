@@ -999,16 +999,36 @@ pub(super) fn start_instance(
     .map(|i| i.id)
 }
 
-/// Turns the game's command into a pack's, or into the selected instance, with the instance's
-/// id.
+/// The instance a start was pressed for (`started`, from [`start_instance`]) among `all`.
+/// `None` when no instance was noted at Play. A start for one that is gone fails: it never falls
+/// back to another instance, whose folder and launch commands it would run with.
+pub(super) fn pressed_instance(
+    all: &[Instance],
+    started: Option<&str>,
+) -> Result<Option<Instance>, String> {
+    let Some(id) = started else { return Ok(None) };
+    match all.iter().find(|i| i.id == id) {
+        Some(i) => Ok(Some(i.clone())),
+        None => Err(trf("No instance {id}: it was removed", &[("id", id)])),
+    }
+}
+
+/// Turns the game's command into a pack's, or into the instance Play was pressed for, with the
+/// instance's id.
 pub(super) fn apply_start(
     cmd: &mut std::process::Command,
     pack: Option<std::path::PathBuf>,
+    started: Option<String>,
 ) -> (Result<(), String>, Option<String>) {
     if let Some(work) = pack {
         let id = start_instance(Some(&work), None);
         return (horizon_launcher::modpacks::apply_profile(cmd, &work), id);
     }
-    let instance = instances::selected();
+    let instance = match pressed_instance(&instances::list(), started.as_deref()) {
+        Ok(Some(instance)) => instance,
+        // No instance was noted at Play (none was listed): the one Play falls back to.
+        Ok(None) => instances::selected(),
+        Err(e) => return (Err(e), None),
+    };
     (instances::apply(cmd, &instance), Some(instance.id))
 }

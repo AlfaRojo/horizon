@@ -1238,5 +1238,6 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ბოლო აგებაში, Horizon {commit}-ზე {mods}-ის გამო, არა {horizon}-ზე",
   "In the last build, on {horizon}": "ბოლო აგებაში, {horizon}-ზე",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "No instance {id}: it was removed": "No instance {id}: it was removed"
 }

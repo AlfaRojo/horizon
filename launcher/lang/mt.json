@@ -1238,5 +1238,6 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Fl-aħħar bini, fuq Horizon {commit} għal {mods}, mhux fuq {horizon}",
   "In the last build, on {horizon}": "Fl-aħħar bini, fuq {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "No instance {id}: it was removed": "No instance {id}: it was removed"
 }

@@ -1234,7 +1234,7 @@ impl Launcher {
                 }
                 Msg::Session(session) => {
                     self.load_auth_statuses(false);
-                    self.starting_instance = None;
+                    let started = self.starting_instance.take();
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
                         let account::GameSession { file, offline, env } = match session {
@@ -1265,10 +1265,15 @@ impl Launcher {
                         }
                         self.accounts = Accounts::load();
                         // A pack's Play button plays that pack; Play plays the selected instance.
-                        let (profile, run) =
-                            instances_page::apply_start(&mut cmd, self.starting_pack.take());
+                        let (profile, run) = instances_page::apply_start(
+                            &mut cmd,
+                            self.starting_pack.take(),
+                            started,
+                        );
                         if let Err(e) = profile {
                             self.client_error = Some(e);
+                            self.joining = None;
+                            self.quick_play = None;
                             account::discard_unread_sessions();
                             continue;
                         }
@@ -5923,6 +5928,34 @@ mod tests {
         assert!(!starts_now(true, true, false), "prepared again under way");
         assert!(!starts_now(false, false, false), "not prepared");
         assert!(!starts_now(true, false, true), "already running");
+    }
+
+    /// A start plays the instance Play was pressed for, whatever is selected when its session
+    /// arrives, and fails when that instance is gone.
+    #[test]
+    fn a_start_plays_the_instance_play_was_pressed_for() {
+        use super::instances_page::pressed_instance;
+        use horizon_launcher::instances::{Instance, Kind};
+        let instance = |id: &str| Instance {
+            id: id.into(),
+            name: id.into(),
+            kind: Kind::Own,
+            work: Default::default(),
+            home: Default::default(),
+            icon: None,
+            group: None,
+            version: None,
+            played: Default::default(),
+            last_played: None,
+            launch: Default::default(),
+            java: None,
+        };
+        let all = [instance("horizon"), instance("a"), instance("b")];
+        let a = pressed_instance(&all, Some("a")).unwrap().unwrap();
+        assert_eq!(a.id, "a");
+        assert_eq!(pressed_instance(&all, None), Ok(None), "none was noted");
+        let gone = pressed_instance(&all, Some("c")).unwrap_err();
+        assert!(gone.contains("No instance c"), "{gone}");
     }
 
     /// A sidebar row says Running or Starting for the instance that was started, not for

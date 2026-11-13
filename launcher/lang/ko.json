@@ -1238,5 +1238,6 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "마지막 빌드: {mods} 때문에 Horizon {commit}에서 ({horizon} 아님)",
   "In the last build, on {horizon}": "마지막 빌드: {horizon}에서",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "No instance {id}: it was removed": "No instance {id}: it was removed"
 }

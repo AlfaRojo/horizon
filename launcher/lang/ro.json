@@ -1238,5 +1238,6 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "În ultima compilare, pe Horizon {commit} pentru {mods}, nu pe {horizon}",
   "In the last build, on {horizon}": "În ultima compilare, pe {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "No instance {id}: it was removed": "No instance {id}: it was removed"
 }
