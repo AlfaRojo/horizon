@@ -366,7 +366,19 @@ pub trait NaturalLevel: SpawnLevel {
         z: i32,
         wanted: &dyn Fn(&str) -> bool,
     ) -> Vec<StructureAt>;
+    /// Whether a structure that changes some category's spawns (a fortress
+    /// or one with `spawn_overrides`) is referenced by the position's chunk.
+    /// `false` means [`Self::structures_at`] answers nothing for any
+    /// `wanted` that takes only such structures, so the caller skips it.
+    fn structures_may_reach(&self, _x: i32, _z: i32) -> bool {
+        true
+    }
     fn structure_spawns(&self) -> &StructureSpawns;
+    /// The loaded chunk `(cx, cz)`'s reads for the starts of one
+    /// `spawn_for_chunk`, or none (the per-call reads answer the same).
+    fn chunk_probe(&self, _cx: i32, _cz: i32) -> Option<ChunkProbe<'_>> {
+        None
+    }
     /// Where the players `getNearestPlayer(x, y, z, -1, false)` measures to
     /// are: every one that is not a spectator.
     fn nearest_player_positions(&self) -> &[[f64; 3]];
@@ -392,6 +404,35 @@ pub trait NaturalLevel: SpawnLevel {
     fn heightmap(&self, kind: Heightmap, x: i32, z: i32) -> i32;
     /// `isPathfindable(PathComputationType.LAND)` of the block.
     fn pathfindable_land(&self, x: i32, y: i32, z: i32) -> bool;
+}
+
+/// A loaded chunk held for the reads of its spawn starts: the world surface
+/// and the block of a column in it, without a lookup of the chunk each. The
+/// level is borrowed while it is held, so no write can make it stale.
+pub struct ChunkProbe<'a> {
+    chunk: &'a crate::chunk::Chunk,
+    facts: &'a crate::blocks::BlockFacts,
+}
+impl<'a> ChunkProbe<'a> {
+    pub fn new(chunk: &'a crate::chunk::Chunk, facts: &'a crate::blocks::BlockFacts) -> Self {
+        Self { chunk, facts }
+    }
+    fn holds(&self, x: i32, z: i32) -> bool {
+        (x >> 4, z >> 4) == (self.chunk.x, self.chunk.z)
+    }
+    /// `getHeight(WORLD_SURFACE, x, z)`, none for a column of another chunk.
+    pub fn world_surface(&self, x: i32, z: i32) -> Option<i32> {
+        let facts = self.facts;
+        self.holds(x, z).then(|| {
+            let air = |v| facts.is_air(horizon_world::registry::BlockStateId(v));
+            self.chunk.world_surface(x, z, air)
+        })
+    }
+    /// The block state, none for a position of another chunk.
+    pub fn state(&self, x: i32, y: i32, z: i32) -> Option<horizon_world::registry::BlockStateId> {
+        self.holds(x, z)
+            .then(|| self.chunk.block(x & 15, y, z & 15))
+    }
 }
 
 /// The heightmap types `SpawnPlacements` registers.
@@ -745,14 +786,18 @@ fn vanilla_mobs_at<L: NaturalLevel>(
     // most chunks are mineshafts, which override nothing).
     let overrides = l.structure_spawns();
     let monster = category == Category::Monster;
-    let structures = l.structures_at(x, y, z, &|id| {
-        (monster && id == "minecraft:fortress") || overrides.get(id, category.name()).is_some()
-    });
+    let structures = if l.structures_may_reach(x, z) {
+        l.structures_at(x, y, z, &|id| {
+            (monster && id == "minecraft:fortress") || overrides.get(id, category.name()).is_some()
+        })
+    } else {
+        Vec::new()
+    };
     if category == Category::Monster
-        && name_at(l, x, y - 1, z) == "minecraft:nether_bricks"
         && structures
             .iter()
             .any(|s| s.id == "minecraft:fortress" && s.in_bounds)
+        && name_at(l, x, y - 1, z) == "minecraft:nether_bricks"
     {
         return fortress_enemies();
     }
@@ -1094,33 +1139,44 @@ pub fn spawn_for_chunk<L: NaturalLevel, R: RandomSource>(
     spawn: &mut dyn FnMut(&L, &SpawnRequest) -> Option<Spawned>,
     trace: &mut dyn FnMut(Event),
 ) {
+    // The level cannot change while it is borrowed: the probe stays exact
+    // across the categories' spawns (which only add entities).
+    let probe = l.chunk_probe(chunk.0, chunk.1);
     for &category in categories {
         let local = state.can_spawn_local(category, chunk.0, chunk.1);
         trace(Event::Local(category, local));
         if local {
-            spawn_category_for_chunk(l, random, state, category, chunk, spawn, trace);
+            let probe = probe.as_ref();
+            spawn_category_for_chunk(l, random, state, category, chunk, probe, spawn, trace);
         }
     }
 }
 /// `NaturalSpawner.spawnCategoryForChunk`: `getRandomPosWithin` (a column of
 /// the chunk, a height up to one above the world surface).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource>(
     l: &L,
     random: &mut R,
     state: &mut SpawnState,
     category: Category,
     chunk: (i32, i32),
+    probe: Option<&ChunkProbe<'_>>,
     spawn: &mut dyn FnMut(&L, &SpawnRequest) -> Option<Spawned>,
     trace: &mut dyn FnMut(Event),
 ) {
     let x = chunk.0 * 16 + random.next_int_bound(16).unwrap_or(0);
     let z = chunk.1 * 16 + random.next_int_bound(16).unwrap_or(0);
-    let top = l.heightmap(Heightmap::WorldSurface, x, z);
+    let top = probe
+        .and_then(|p| p.world_surface(x, z))
+        .unwrap_or_else(|| l.heightmap(Heightmap::WorldSurface, x, z));
     let min = l.min_y();
     let y = min + random.next_int_bound(top - min + 1).unwrap_or(0);
     trace(Event::Start(category, [x, y, z]));
     if y > min {
-        spawn_category_for_position(l, random, state, category, chunk, [x, y, z], spawn, trace);
+        let start = [x, y, z];
+        spawn_category_for_position(
+            l, random, state, category, chunk, start, probe, spawn, trace,
+        );
     }
 }
 /// `NaturalSpawner.spawnCategoryForPosition` with the spawn state's
@@ -1133,11 +1189,15 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
     category: Category,
     chunk: (i32, i32),
     start: [i32; 3],
+    probe: Option<&ChunkProbe<'_>>,
     spawn: &mut dyn FnMut(&L, &SpawnRequest) -> Option<Spawned>,
     trace: &mut dyn FnMut(Event),
 ) {
     let [x0, y, z0] = start;
-    if l.mob_data().state(l.state(x0, y, z0)).flags & super::data::REDSTONE_CONDUCTOR != 0 {
+    let block = probe
+        .and_then(|p| p.state(x0, y, z0))
+        .unwrap_or_else(|| l.state(x0, y, z0));
+    if l.mob_data().state(block).flags & super::data::REDSTONE_CONDUCTOR != 0 {
         return;
     }
     let mut spawned: Vec<Aabb> = Vec::new();

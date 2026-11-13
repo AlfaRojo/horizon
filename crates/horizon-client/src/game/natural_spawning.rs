@@ -337,6 +337,8 @@ pub(super) struct GameLevel<'g, 'a> {
     /// nether's few): for any other the cost is none wherever it stands, and
     /// spawning asks for one for every loaded mob each tick.
     pub(super) costed: Vec<&'g str>,
+    /// The last chunk [`NaturalLevel::structures_may_reach`] was asked about.
+    pub(super) structure_reach: std::cell::Cell<Option<((i32, i32), bool)>>,
 }
 const SCANNED_QUERIES: u32 = 8;
 /// A mob not removed: its index in `Game::mobs`, box, alive, and whether
@@ -543,8 +545,30 @@ impl NaturalLevel for GameLevel<'_, '_> {
             })
             .collect()
     }
+    /// Whether the chunk references a fortress or a structure with spawn
+    /// overrides: any other reference is never `wanted`.
+    fn structures_may_reach(&self, x: i32, z: i32) -> bool {
+        let key = (x >> 4, z >> 4);
+        if let Some((asked, reaches)) = self.structure_reach.get()
+            && asked == key
+        {
+            return reaches;
+        }
+        let spawns = self.structure_spawns();
+        let reaches = self.w.world.chunks.get(&key).is_some_and(|chunk| {
+            (chunk.structure_refs.iter()).any(|(id, _)| {
+                &**id == "minecraft:fortress" || spawns.overrides.contains_key(&**id)
+            })
+        });
+        self.structure_reach.set(Some((key, reaches)));
+        reaches
+    }
     fn structure_spawns(&self) -> &StructureSpawns {
         StructureSpawns::shared(&self.game.options.resources)
+    }
+    fn chunk_probe(&self, cx: i32, cz: i32) -> Option<spawn_selection::ChunkProbe<'_>> {
+        let chunk = self.w.world.chunks.get(&(cx, cz))?;
+        Some(spawn_selection::ChunkProbe::new(chunk, self.w.facts))
     }
     fn nearest_player_positions(&self) -> &[[f64; 3]] {
         &self.nearest
@@ -686,6 +710,7 @@ impl<'a> Game<'a> {
             boxes: Default::default(),
             box_queries: Default::default(),
             costed: spawn_cost_types(world_biomes!(self)),
+            structure_reach: Default::default(),
         }
     }
     pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
@@ -1389,5 +1414,100 @@ mod tests {
             ["spawn_raids", "spawn_natural", "spawn_custom"],
             "ServerLevel.tick ticks the raids before the chunk source's spawns"
         );
+    }
+
+    /// A chunk held for one `spawn_for_chunk` answers its columns as the
+    /// per-call reads do, before and after a block write (a write needs the
+    /// level out of its borrow, so a held probe is never stale), and none for
+    /// a column elsewhere.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn chunk_probe_reads_what_the_per_call_path_reads() {
+        use horizon_client::chunk::Chunk;
+        use horizon_client::mobs::spawn_rules::SpawnLevel;
+        fn assert_same(game: &Game) {
+            let level = game.natural_level();
+            let probe = level.chunk_probe(0, 0).unwrap();
+            for (x, z) in [(0, 0), (3, 5), (15, 15), (8, 1)] {
+                let top = level.heightmap(Heightmap::WorldSurface, x, z);
+                assert_eq!(probe.world_surface(x, z), Some(top), "{x} {z}");
+                for y in [-64, 0, 69, 70, 71, 319, 400, -100] {
+                    assert_eq!(
+                        probe.state(x, y, z),
+                        Some(level.state(x, y, z)),
+                        "{x} {y} {z}"
+                    );
+                }
+            }
+            assert!(probe.world_surface(16, 0).is_none());
+            assert!(probe.state(0, 64, -1).is_none());
+            assert!(level.chunk_probe(5, 5).is_none());
+        }
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.world
+            .chunks
+            .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
+        assert_same(&game);
+        let level = game.natural_level();
+        assert_eq!(
+            level.chunk_probe(0, 0).unwrap().world_surface(3, 5),
+            Some(level.min_y())
+        );
+        drop(level);
+        let chunk = std::sync::Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap());
+        chunk.set(3, 70, 5, 1);
+        assert_same(&game);
+        let level = game.natural_level();
+        assert_eq!(
+            level.chunk_probe(0, 0).unwrap().world_surface(3, 5),
+            Some(71)
+        );
+    }
+
+    /// Only a chunk referencing a fortress or a structure with spawn
+    /// overrides asks for structures, whichever chunk was asked last, and a
+    /// chunk that does not gives the biome's list as the full lookup does.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn structures_are_asked_only_where_one_that_spawns_reaches() {
+        use horizon_client::chunk::Chunk;
+        let refs = |ids: &[&str]| -> Vec<(std::sync::Arc<str>, (i32, i32))> {
+            ids.iter().map(|id| ((*id).into(), (0, 0))).collect()
+        };
+        let mut game = crate::game::native_machines::tests::server_game();
+        for x in 0..2 {
+            game.world
+                .chunks
+                .insert((x, 0), std::sync::Arc::new(Chunk::empty(x, 0)));
+        }
+        let cases = [
+            (vec![], false),
+            (
+                refs(&["minecraft:mineshaft", "minecraft:village_plains"]),
+                false,
+            ),
+            (refs(&["minecraft:mineshaft", "minecraft:fortress"]), true),
+            (refs(&["minecraft:swamp_hut"]), true),
+            (refs(&["minecraft:monument"]), true),
+        ];
+        for (ids, reaches) in cases {
+            let chunk = std::sync::Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap());
+            chunk.structure_refs = ids.clone();
+            let level = game.natural_level();
+            // The cache answers the chunk asked last, and another chunk's own.
+            assert_eq!(level.structures_may_reach(3, 4), reaches, "{ids:?}");
+            assert!(!level.structures_may_reach(19, 4));
+            assert_eq!(level.structures_may_reach(0, 15), reaches, "{ids:?}");
+            assert_eq!(level.structures_may_reach(3, 4), reaches, "{ids:?}");
+            assert!(!level.structures_may_reach(-17, 4), "unloaded");
+            if !reaches {
+                let biome = level.biome_spawns(3, 64, 4).and_then(|b| b.get("monster"));
+                let listed = spawn_selection::mobs_at(&level, Category::Monster, 3, 64, 4);
+                let names = |l: &[crate::biome::SpawnEntry]| -> Vec<String> {
+                    l.iter().map(|e| e.entity.clone()).collect()
+                };
+                assert_eq!(names(&listed), names(biome.map_or(&[][..], Vec::as_slice)));
+            }
+        }
     }
 }

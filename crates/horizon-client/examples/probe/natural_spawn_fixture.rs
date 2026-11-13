@@ -884,6 +884,7 @@ pub fn main() -> horizon_client::Result<()> {
                     category,
                     chunk,
                     [v[0], v[1], v[2]],
+                    None,
                     &mut spawn,
                     &mut trace,
                 );
