@@ -339,6 +339,9 @@ pub(super) struct GameLevel<'g, 'a> {
     pub(super) costed: Vec<&'g str>,
     /// The last chunk [`NaturalLevel::structures_may_reach`] was asked about.
     pub(super) structure_reach: std::cell::Cell<Option<((i32, i32), bool)>>,
+    /// Tests: read as the trait's defaults do, without the shortcuts.
+    #[cfg(test)]
+    pub(super) exact: bool,
 }
 const SCANNED_QUERIES: u32 = 8;
 /// A mob not removed: its index in `Game::mobs`, box, alive, and whether
@@ -548,6 +551,10 @@ impl NaturalLevel for GameLevel<'_, '_> {
     /// Whether the chunk references a fortress or a structure with spawn
     /// overrides: any other reference is never `wanted`.
     fn structures_may_reach(&self, x: i32, z: i32) -> bool {
+        #[cfg(test)]
+        if self.exact {
+            return true;
+        }
         let key = (x >> 4, z >> 4);
         if let Some((asked, reaches)) = self.structure_reach.get()
             && asked == key
@@ -567,6 +574,10 @@ impl NaturalLevel for GameLevel<'_, '_> {
         StructureSpawns::shared(&self.game.options.resources)
     }
     fn chunk_probe(&self, cx: i32, cz: i32) -> Option<spawn_selection::ChunkProbe<'_>> {
+        #[cfg(test)]
+        if self.exact {
+            return None;
+        }
         let chunk = self.w.world.chunks.get(&(cx, cz))?;
         Some(spawn_selection::ChunkProbe::new(chunk, self.w.facts))
     }
@@ -711,6 +722,8 @@ impl<'a> Game<'a> {
             box_queries: Default::default(),
             costed: spawn_cost_types(world_biomes!(self)),
             structure_reach: Default::default(),
+            #[cfg(test)]
+            exact: false,
         }
     }
     pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
@@ -1464,50 +1477,310 @@ mod tests {
         );
     }
 
-    /// Only a chunk referencing a fortress or a structure with spawn
-    /// overrides asks for structures, whichever chunk was asked last, and a
-    /// chunk that does not gives the biome's list as the full lookup does.
+    /// A structure start found by `/locate` in a generator's own world, and the
+    /// 3x3 chunks around it laid out as storeys of floors (cave-like: a
+    /// monster stands on every fourth layer, in the dark), referencing it as
+    /// chunks do: its own, one that only references it, one with a reference
+    /// that is never wanted, and the rest with none.
+    struct Site {
+        name: String,
+        own: (i32, i32),
+        only_refs: (i32, i32),
+        unwanted: (i32, i32),
+        min: [i32; 3],
+        max: [i32; 3],
+    }
+
+    fn lay_out_site(
+        game: &mut Game<'static>,
+        dimension: &str,
+        names: &[&str],
+        floor: &str,
+    ) -> Site {
+        use horizon_client::chunk::Chunk;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let terrain = std::sync::Arc::new(
+            VanillaTerrain::for_dimension(
+                &root.join("worldgen"),
+                game.pack.assets.registry,
+                game.res.biomes(),
+                12345,
+                dimension,
+            )
+            .unwrap(),
+        );
+        let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+        let (name, at) = terrain.locate(&names, [0, 64, 0], 60).expect("a start");
+        let near = |d: i32| (at[0] >> 4) + d;
+        let start = (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
+            .find_map(|(dx, dz)| {
+                let starts = terrain.starts_at(near(dx), (at[2] >> 4) + dz);
+                starts.into_iter().find(|s| s.name == name)
+            })
+            .expect("the located start");
+        game.end.set_locator(Some(terrain));
+        let (sx, sz) = (start.chunk.x, start.chunk.z);
+        let (min, max) = (start.bounding_box.min, start.bounding_box.max);
+        // The neighbour the start's box reaches furthest into only references it.
+        let reach = |dx: i32, dz: i32| {
+            let span = |lo: i32, hi: i32, c: i32| (hi.min(c * 16 + 15) - lo.max(c * 16) + 1).max(0);
+            span(min[0], max[0], sx + dx) * span(min[2], max[2], sz + dz)
+        };
+        let mut sides = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+        sides.sort_by_key(|&(dx, dz)| -reach(dx, dz));
+        let place = |(dx, dz): (i32, i32)| (sx + dx, sz + dz);
+        let site = Site {
+            name,
+            own: (sx, sz),
+            only_refs: place(sides[0]),
+            unwanted: place(sides[1]),
+            min,
+            max,
+        };
+        let state = game.pack.assets.registry.default_state(floor).unwrap().0;
+        let (lo, hi) = (-60, (max[1] + 12).min(300) / 4 * 4);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let (cx, cz) = (sx + dx, sz + dz);
+                let mut chunk = Chunk::empty(cx, cz);
+                for x in 0..16 {
+                    for z in 0..16 {
+                        for y in (lo..=hi).step_by(4) {
+                            chunk.set(x, y, z, state);
+                        }
+                        // A column a few blocks taller, so surfaces differ.
+                        if (x * 5 + z * 3 + dx + dz) % 7 == 0 {
+                            chunk.set(x, hi + 3, z, state);
+                        }
+                    }
+                }
+                let ref_of = |id: &str, at: (i32, i32)| (std::sync::Arc::<str>::from(id), at);
+                let own = (sx, sz);
+                chunk.structure_refs = match (cx, cz) {
+                    c if c == site.own => vec![ref_of(&site.name, own)],
+                    c if c == site.only_refs => {
+                        vec![ref_of("minecraft:mineshaft", own), ref_of(&site.name, own)]
+                    }
+                    c if c == site.unwanted => vec![
+                        ref_of("minecraft:village_plains", own),
+                        ref_of("minecraft:mineshaft", own),
+                    ],
+                    _ => Vec::new(),
+                };
+                game.world
+                    .chunks
+                    .insert((cx, cz), std::sync::Arc::new(chunk));
+            }
+        }
+        site
+    }
+
+    /// One variant of the same spawn passes: every chunk of the site for many
+    /// rounds on one seeded random. The trace, the mobs created and the next
+    /// draw of the random.
+    fn spawn_rounds(game: &Game, site: &Site, exact: bool) -> (Vec<String>, Vec<String>, i64) {
+        let mut random = LegacyRandom::new(4242);
+        let (mut events, mut mobs) = (Vec::new(), Vec::new());
+        let mid = f64::from(site.min[1] + site.max[1]) / 2.0;
+        let chunks: Vec<(i32, i32)> = (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dz| (site.own.0 + dx, site.own.1 + dz)))
+            .collect();
+        for _ in 0..100 {
+            let at = [
+                f64::from(site.own.0 * 16 + 62),
+                mid,
+                f64::from(site.own.1 * 16 + 8),
+            ];
+            let mut level =
+                game.natural_level_with_players(vec![player(at[0], at[1], at[2], false)]);
+            level.exact = exact;
+            let players = vec![SpawnPlayer {
+                position: at,
+                spectator: false,
+            }];
+            let mut state = SpawnState::new(
+                &level,
+                289,
+                players,
+                std::iter::empty::<Counted>(),
+                |cx, cz| game.world.chunks.contains_key(&(cx, cz)),
+            );
+            let categories = state.filtered_categories(true, true);
+            let mut pending = Vec::new();
+            for &chunk in &chunks {
+                let mut spawn = |l: &GameLevel, r: &SpawnRequest| {
+                    let spawned = l.game.finalize_spawned(r, &mut pending);
+                    if let Some(s) = &spawned {
+                        l.pending.borrow_mut().push(s.bounds);
+                    }
+                    spawned
+                };
+                let mut trace = |e| events.push(format!("{e:?}"));
+                spawn_selection::spawn_for_chunk(
+                    &level,
+                    &mut random,
+                    &mut state,
+                    &categories,
+                    chunk,
+                    &mut spawn,
+                    &mut trace,
+                );
+            }
+            mobs.extend(
+                pending
+                    .iter()
+                    .map(|m| format!("{} {:?}", m.kind.id, m.position)),
+            );
+        }
+        (events, mobs, random.next_long())
+    }
+
+    /// `mobsAt` for every category over the columns of the site's chunks at the
+    /// heights around its box: the lists as (entity, weight, min, max).
+    fn lists_at(game: &Game, site: &Site, exact: bool) -> Vec<(Category, [i32; 3], String)> {
+        let mut level = game.natural_level();
+        level.exact = exact;
+        let (cx, cz) = site.own;
+        let mut out = Vec::new();
+        for x in ((cx - 1) * 16..(cx + 2) * 16).step_by(3) {
+            for z in ((cz - 1) * 16..(cz + 2) * 16).step_by(3) {
+                for y in site.min[1] - 2..=site.max[1] + 2 {
+                    for category in Category::ALL {
+                        let list = spawn_selection::mobs_at(&level, category, x, y, z);
+                        let names = list.iter().map(|e| {
+                            format!(
+                                "{} {} {}-{} {}",
+                                e.entity, e.weight, e.min, e.max, e.constant
+                            )
+                        });
+                        out.push((category, [x, y, z], names.collect::<Vec<_>>().join(", ")));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The types the structure's list holds for monsters that the biome's list
+    /// of the site's chunks without a reference does not.
+    fn override_only_types(
+        game: &Game,
+        site: &Site,
+        lists: &[(Category, [i32; 3], String)],
+    ) -> Vec<String> {
+        let types = |names: &str| -> Vec<String> {
+            names
+                .split(", ")
+                .filter_map(|e| e.split(' ').next())
+                .map(str::to_owned)
+                .collect()
+        };
+        let plain = |(category, [x, _, z], _): &&(Category, [i32; 3], String)| {
+            let chunk = (x >> 4, z >> 4);
+            *category == Category::Monster && chunk != site.own && chunk != site.only_refs
+        };
+        let biome: Vec<String> = lists
+            .iter()
+            .filter(plain)
+            .flat_map(|l| types(&l.2))
+            .collect();
+        let listed: Vec<String> = if site.name == "minecraft:fortress" {
+            spawn_selection::fortress_enemies()
+                .iter()
+                .map(|e| e.entity.clone())
+                .collect()
+        } else {
+            let shared = StructureSpawns::shared(&game.options.resources);
+            let entry = shared.get(&site.name, "monster").expect("an override");
+            entry.spawns.iter().map(|e| e.entity.clone()).collect()
+        };
+        listed.into_iter().filter(|t| !biome.contains(t)).collect()
+    }
+
+    /// Where `mobsAt` gave something other than the biome's list (monsters), by
+    /// chunk, and how many columns inside the start's box no wanted reference
+    /// reaches (they give the biome's list).
+    fn overridden(game: &Game, site: &Site, lists: &[(Category, [i32; 3], String)]) -> [usize; 3] {
+        let level = game.natural_level();
+        let mut counts = [0; 3];
+        for (category, [x, y, z], names) in lists {
+            let biome = level
+                .biome_spawns(*x, *y, *z)
+                .and_then(|b| b.get(category.name()));
+            let biome: Vec<String> = biome
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{} {} {}-{} {}",
+                        e.entity, e.weight, e.min, e.max, e.constant
+                    )
+                })
+                .collect();
+            if *category != Category::Monster {
+                continue;
+            }
+            let chunk = (x >> 4, z >> 4);
+            let wanted = chunk == site.own || chunk == site.only_refs;
+            let inside =
+                (0..3).all(|i| [*x, *y, *z][i] >= site.min[i] && [*x, *y, *z][i] <= site.max[i]);
+            if *names != biome.join(", ") {
+                assert!(wanted, "{chunk:?} gives an override without a reference");
+                counts[usize::from(chunk == site.only_refs)] += 1;
+            } else if inside && !wanted {
+                counts[2] += 1;
+            }
+        }
+        counts
+    }
+
+    /// Natural spawning's shortcuts (the chunk held for a start's reads, and no
+    /// structure lookup where the chunk references no fortress or overriding
+    /// structure) give what the full lookups give. The real spawning code runs
+    /// over the same world and seed with and without them, in a world with a
+    /// real start of an overriding structure and one with a real nether
+    /// fortress, and so does `mobsAt` over every column, in every category.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn structures_are_asked_only_where_one_that_spawns_reaches() {
-        use horizon_client::chunk::Chunk;
-        let refs = |ids: &[&str]| -> Vec<(std::sync::Arc<str>, (i32, i32))> {
-            ids.iter().map(|id| ((*id).into(), (0, 0))).collect()
-        };
-        let mut game = crate::game::native_machines::tests::server_game();
-        for x in 0..2 {
-            game.world
-                .chunks
-                .insert((x, 0), std::sync::Arc::new(Chunk::empty(x, 0)));
-        }
-        let cases = [
-            (vec![], false),
-            (
-                refs(&["minecraft:mineshaft", "minecraft:village_plains"]),
-                false,
-            ),
-            (refs(&["minecraft:mineshaft", "minecraft:fortress"]), true),
-            (refs(&["minecraft:swamp_hut"]), true),
-            (refs(&["minecraft:monument"]), true),
+    fn natural_spawning_shortcuts_give_what_the_full_lookups_give() {
+        let overworld = [
+            "minecraft:swamp_hut",
+            "minecraft:pillager_outpost",
+            "minecraft:monument",
         ];
-        for (ids, reaches) in cases {
-            let chunk = std::sync::Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap());
-            chunk.structure_refs = ids.clone();
-            let level = game.natural_level();
-            // The cache answers the chunk asked last, and another chunk's own.
-            assert_eq!(level.structures_may_reach(3, 4), reaches, "{ids:?}");
-            assert!(!level.structures_may_reach(19, 4));
-            assert_eq!(level.structures_may_reach(0, 15), reaches, "{ids:?}");
-            assert_eq!(level.structures_may_reach(3, 4), reaches, "{ids:?}");
-            assert!(!level.structures_may_reach(-17, 4), "unloaded");
-            if !reaches {
-                let biome = level.biome_spawns(3, 64, 4).and_then(|b| b.get("monster"));
-                let listed = spawn_selection::mobs_at(&level, Category::Monster, 3, 64, 4);
-                let names = |l: &[crate::biome::SpawnEntry]| -> Vec<String> {
-                    l.iter().map(|e| e.entity.clone()).collect()
-                };
-                assert_eq!(names(&listed), names(biome.map_or(&[][..], Vec::as_slice)));
-            }
+        let worlds = [
+            ("minecraft:overworld", &overworld[..], "minecraft:stone"),
+            (
+                "minecraft:the_nether",
+                &["minecraft:fortress"][..],
+                "minecraft:nether_bricks",
+            ),
+        ];
+        for (dimension, names, floor) in worlds {
+            let mut game = crate::game::native_machines::tests::server_game();
+            let site = lay_out_site(&mut game, dimension, names, floor);
+            let why = format!("{dimension} {} {:?}", site.name, (site.min, site.max));
+            let (events, mobs, next) = spawn_rounds(&game, &site, false);
+            let exact = spawn_rounds(&game, &site, true);
+            assert!(events == exact.0, "trace {why}");
+            assert!(mobs == exact.1, "mobs {why}");
+            assert_eq!(next, exact.2, "random {why}");
+            assert!(!mobs.is_empty(), "something spawned {why}");
+            let lists = lists_at(&game, &site, false);
+            assert!(lists == lists_at(&game, &site, true), "mobsAt {why}");
+            let [own, only_refs, unreached] = overridden(&game, &site, &lists);
+            assert!(
+                own > 0 && only_refs > 0 && unreached > 0,
+                "{why}: {own} {only_refs} {unreached}"
+            );
+            let ids: std::collections::BTreeSet<&str> =
+                mobs.iter().filter_map(|m| m.split(' ').next()).collect();
+            let override_only = override_only_types(&game, &site, &lists);
+            assert!(
+                ids.iter().any(|id| override_only.iter().any(|t| t == id)),
+                "{why}: {ids:?} {override_only:?}"
+            );
         }
     }
 }
