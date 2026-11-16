@@ -77,13 +77,6 @@ fn inventory_after_mode(screen: Screen, creative: bool) -> Screen {
     }
 }
 
-/// `AbstractContainerMenu.removed` returns the carried stack only on the
-/// server. The survival one is real; the creative one is client-only (picking
-/// from a tab sends no packet), so it is discarded, like the creative trash.
-fn carried_kept_on_leaving<T>(from: Screen, carried: Option<T>) -> Option<T> {
-    carried.filter(|_| from != Screen::Creative)
-}
-
 impl Game<'_> {
     /// `InventoryScreen.containerTick` and `CreativeModeInventoryScreen.containerTick`
     /// on a mode change: the inventory the player has open follows the mode.
@@ -99,12 +92,10 @@ impl Game<'_> {
                 self.creative_screen.reopen();
                 self.refresh_saved_hotbars();
             }
-            next if next != from => {
-                if let Some(c) = carried_kept_on_leaving(from, self.carried.take()) {
-                    let _ = self.give(c);
-                }
-                self.screen = next;
-            }
+            // `ItemPickerMenu` and the new `InventoryScreen` share
+            // `player.inventoryMenu`, and `removed` does nothing on a client
+            // player: the carried stack stays on the cursor.
+            next if next != from => self.screen = next,
             _ => {}
         }
     }
@@ -353,10 +344,7 @@ mod adventure_gate_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Screen, carried_kept_on_leaving, inventory_after_mode, loads_chunks,
-        projectile_predicate_supported,
-    };
+    use super::{Screen, inventory_after_mode, loads_chunks, projectile_predicate_supported};
 
     // Added after the frozen old Game proof: unsupported conjuncts must not
     // become permission from their otherwise matching blocks portion.
@@ -408,15 +396,6 @@ mod tests {
         }
     }
 
-    /// Leaving the creative screen discards its client-only carried stack;
-    /// the survival screen's is real and goes back to the inventory.
-    #[test]
-    fn only_a_survival_carried_stack_is_kept_on_leaving() {
-        assert_eq!(carried_kept_on_leaving(Screen::Creative, Some(7)), None);
-        assert_eq!(carried_kept_on_leaving(Screen::Inventory, Some(7)), Some(7));
-        assert_eq!(carried_kept_on_leaving::<i32>(Screen::Creative, None), None);
-    }
-
     /// `ChunkMap.skipPlayer`: only a spectator with `spectators_generate_chunks`
     /// off stops loading chunks around itself.
     #[test]
@@ -431,5 +410,27 @@ mod tests {
             loads_chunks(true, false),
             "survival, creative or adventure, rule on"
         );
+    }
+
+    /// `AbstractContainerMenu.removed` does nothing on a client player and
+    /// both screens share `player.inventoryMenu`: leaving creative keeps the
+    /// carried stack on the cursor.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn leaving_creative_keeps_the_carried_stack() {
+        use crate::game::{GameMode, ItemStack};
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.set_mode(GameMode::Creative);
+        game.screen = Screen::Creative;
+        game.carried = Some(ItemStack {
+            item: "minecraft:stone".into(),
+            count: 3,
+            damage: 0,
+            extra: None,
+        });
+        game.set_mode(GameMode::Survival);
+        assert!(game.screen == Screen::Inventory);
+        let kept = game.carried.as_ref().expect("the cursor stack is kept");
+        assert_eq!((&*kept.item, kept.count), ("minecraft:stone", 3));
     }
 }
