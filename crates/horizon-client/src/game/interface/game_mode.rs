@@ -489,4 +489,24 @@ mod tests {
         let kept = game.carried.as_ref().expect("the cursor stack is kept");
         assert_eq!((&*kept.item, kept.count), ("minecraft:stone", 3));
     }
+
+    /// `CreativeModeInventoryScreen.containerTick` is the other way back: the
+    /// tick swaps to the survival screen and the cursor stack stays.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn the_tick_swap_out_of_creative_keeps_the_carried_stack() {
+        use horizon_client::items::ItemStack;
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.screen = Screen::Creative;
+        game.creative = false;
+        game.carried = Some(ItemStack {
+            item: "minecraft:stone".into(),
+            count: 3,
+            damage: 0,
+            extra: None,
+        });
+        let _ = game.tick();
+        assert!(game.screen == Screen::Inventory);
+        assert_eq!(game.carried.as_ref().map(|c| c.count), Some(3));
+    }
 }

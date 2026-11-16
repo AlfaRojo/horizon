@@ -4499,10 +4499,9 @@ impl Game<'_> {
             // CreativeModeInventoryScreen.containerTick: a player without
             // infinite materials gets the survival inventory instead.
             if !self.creative {
-                if let Some(c) = self.carried.take() {
-                    let _ = self.add_stack_to_inventory(c);
-                }
-                self.set_screen(Screen::Inventory);
+                // The carried stack lives in `inventoryMenu` and stays on the
+                // cursor; no `removed` on a client player.
+                self.screen = Screen::Inventory;
             }
         }
         if self.remote.is_some() {
