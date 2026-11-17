@@ -472,7 +472,7 @@ mod tests {
     /// both screens share `player.inventoryMenu`: leaving creative keeps the
     /// carried stack on the cursor.
     #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn leaving_creative_keeps_the_carried_stack() {
         use horizon_client::{command::args::GameMode, items::ItemStack};
         let mut game = crate::game::native_machines::tests::server_game();
@@ -493,7 +493,7 @@ mod tests {
     /// `CreativeModeInventoryScreen.containerTick` is the other way back: the
     /// tick swaps to the survival screen and the cursor stack stays.
     #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn the_tick_swap_out_of_creative_keeps_the_carried_stack() {
         use horizon_client::items::ItemStack;
         let mut game = crate::game::native_machines::tests::server_game();
