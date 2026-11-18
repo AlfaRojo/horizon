@@ -82,7 +82,7 @@ impl Game<'_> {
             // `ItemPickerMenu` and the new `InventoryScreen` share
             // `player.inventoryMenu`, and `removed` does nothing on a client
             // player: the carried stack stays on the cursor.
-            next if next != from => self.screen = next,
+            next if next != from => self.set_screen(next),
             _ => {}
         }
     }
@@ -497,6 +497,8 @@ mod tests {
     fn the_tick_swap_out_of_creative_keeps_the_carried_stack() {
         use horizon_client::items::ItemStack;
         let mut game = crate::game::native_machines::tests::server_game();
+        // The window's lead runs on a client's own game only.
+        game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
         game.screen = Screen::Creative;
         game.creative = false;
         game.carried = Some(ItemStack {
