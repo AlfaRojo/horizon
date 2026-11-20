@@ -21614,6 +21614,10 @@ impl Loading {
         // Not before the first frame: opening the output takes a moment.
         if self.shown
             && self.failure.is_none()
+            && self
+                .sound_registry
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
             && let Some(registry) = self.sound_registry.take()
         {
             let registry = registry.join().unwrap_or_default();
@@ -21645,7 +21649,15 @@ impl Loading {
         self.failure = None;
         // The sound events were read from the empty resources at boot (the import's chime may
         // have opened an output on them since): the output is rebuilt once they are read again.
-        self.sound_registry = Some(spawn_sound_registry(&self.vanilla_root));
+        let client = self.options.as_ref().is_some_and(|o| o.dedicated.is_none());
+        if client {
+            // The boot thread has long finished (the load failed); never leave it running beside
+            // the new one, both write the sounds' files.
+            if let Some(old) = self.sound_registry.take() {
+                let _ = old.join();
+            }
+            self.sound_registry = Some(spawn_sound_registry(&self.vanilla_root));
+        }
         log::info!("Horizon: resources imported, loading again");
         Ok(())
     }
