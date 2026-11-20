@@ -91,6 +91,16 @@ impl SliderTouch {
     pub fn dragging(&self) -> bool {
         matches!(self.owner, Some((_, Mode::Drag)))
     }
+    /// A finger owns a slider touch: other fingers must leave the cursor and focus alone.
+    pub fn busy(&self) -> bool {
+        self.owner.is_some()
+    }
+    /// The touch will not come back (screen left, touch lost): forget it, and hand back the
+    /// costly value that was still waiting.
+    pub fn reset(&mut self) -> Option<Costly> {
+        self.owner = None;
+        self.settle.finish()
+    }
     pub fn settle(&mut self) -> &mut Settle {
         &mut self.settle
     }
@@ -260,6 +270,35 @@ mod tests {
             Grab::Ignore
         );
         assert_eq!(t.touch(2, [50., 5.], TouchPhase::Moved, true), Grab::Ignore);
+    }
+
+    #[test]
+    fn another_finger_changes_nothing_of_a_drag_in_progress() {
+        let mut t = SliderTouch::default();
+        t.touch(1, [100., 100.], TouchPhase::Started, true);
+        t.touch(1, [130., 100.], TouchPhase::Moved, true);
+        for phase in [TouchPhase::Started, TouchPhase::Moved, TouchPhase::Ended] {
+            assert_eq!(t.touch(2, [5., 5.], phase, true), Grab::Ignore);
+            assert!(t.busy() && t.dragging());
+        }
+        assert_eq!(
+            t.touch(1, [140., 100.], TouchPhase::Moved, true),
+            Grab::Drag
+        );
+    }
+
+    #[test]
+    fn reset_frees_the_slider_and_hands_back_the_waiting_value() {
+        let mut t = SliderTouch::default();
+        t.touch(1, [100., 100.], TouchPhase::Started, true);
+        t.touch(1, [130., 100.], TouchPhase::Moved, true);
+        t.settle().begin(costly(12));
+        assert!(t.settle().step(costly(30), Instant::now()));
+        assert_eq!(t.reset(), Some(costly(30)));
+        assert!(!t.busy() && !t.dragging());
+        assert_eq!(t.settle().shown(), None);
+        assert_eq!(t.reset(), None);
+        assert_eq!(t.touch(2, [5., 5.], TouchPhase::Started, true), Grab::Hold);
     }
 
     fn costly(render: i32) -> Costly {

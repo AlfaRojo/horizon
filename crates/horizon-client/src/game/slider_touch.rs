@@ -26,6 +26,26 @@ impl Game<'_> {
         }
         held
     }
+    /// The touch will not come back (screen closed, touch lost): the value the player saw is
+    /// applied and saved once, as a release would.
+    pub(super) fn slider_abort(&mut self) {
+        if let Some(live) = self.mobile.slider.reset() {
+            live.put(&mut self.settings);
+            self.settings.save(&Self::options_path());
+            self.apply_settings();
+        }
+    }
+    /// Every frame: a slider touch outlived the screen it began on.
+    pub(super) fn slider_screen_guard(&mut self) {
+        let gone = if self.mobile.slider_in_options {
+            self.screen != Screen::Options
+        } else {
+            self.screen == Screen::Playing
+        };
+        if gone && self.mobile.slider.busy() {
+            self.slider_abort();
+        }
+    }
     /// Every frame of the options: a value that stayed unchanged long enough applies.
     pub(super) fn slider_tick(&mut self) {
         if let Some(settled) = self.mobile.slider.settle().due(Instant::now()) {

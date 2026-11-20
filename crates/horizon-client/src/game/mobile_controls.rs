@@ -23,6 +23,8 @@ pub(super) struct MobileControls {
     late_custom_releases: Vec<String>,
     hardware_keys: std::collections::HashSet<KeyCode>,
     pub slider: horizon_client::touch_slider::SliderTouch,
+    /// The slider touch began on the options screen.
+    pub slider_in_options: bool,
     pub touch_shield: bool,
     pub touch_aim: Option<[f32; 2]>,
     pub loaded: bool,
@@ -196,6 +198,7 @@ impl Game<'_> {
     }
     pub(in crate::game) fn mobile_frame(&mut self, events: &dyn super::event_loop::EventLoopCtl) {
         self.mobile_init();
+        self.slider_screen_guard();
         self.mobile.ui.hub_visible = self.mobile.controls.settings.show_control_hub;
         self.mobile.ui.utility_offset_y = if self.screen == Screen::Playing
             && horizon_client::accounts::in_game()
@@ -1697,6 +1700,9 @@ impl Game<'_> {
         self.debug_key(key, KeyAction::Release);
     }
     pub(super) fn android_release_touch_keys(&mut self, cancelled: bool) {
+        if cancelled {
+            self.slider_abort();
+        }
         self.mobile.ui.clear_modifiers();
         if cancelled && matches!(self.screen, Screen::Inventory | Screen::Creative) {
             self.inv_clicks = Default::default();
@@ -1764,6 +1770,13 @@ impl Game<'_> {
         let track = self.on_scrollbar(phys);
         let on_slider = !track && over_slider(p);
         let grab = self.mobile.slider.touch(t.id, phys, t.phase, on_slider);
+        if grab == Grab::Ignore && self.mobile.slider.busy() {
+            // Another finger must not move the cursor of, or release, a slider touch.
+            return;
+        }
+        if grab == Grab::Hold && t.phase == TouchPhase::Started {
+            self.mobile.slider_in_options = self.screen == Screen::Options;
+        }
         let direct = match grab {
             Grab::Ignore => self.mobile.ui.direct_pointer(t.id, p, t.phase, track),
             Grab::Begin | Grab::Drag | Grab::Release => true,
