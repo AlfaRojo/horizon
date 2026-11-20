@@ -187,6 +187,10 @@ impl HashSetOrder {
         }
         self.table[i].push(key.to_owned());
         self.size += 1;
+        // `HashMap.treeifyBin` resizes instead of treeifying a 9-node bin in a table under 64.
+        if self.table[i].len() >= 9 && self.table.len() < 64 {
+            self.resize();
+        }
         if self.size > self.table.len() * 3 / 4 {
             self.resize();
         }
@@ -241,16 +245,25 @@ pub fn hash_set_order<T: PartialEq>(
         }
         table[i].push(item);
         size += 1;
+        // `HashMap.treeifyBin` resizes instead of treeifying a 9-node bin in a table under 64.
+        if table[i].len() >= 9 && table.len() < 64 {
+            double(&mut table, spread);
+        }
         if size > table.len() * 3 / 4 {
-            let n = table.len() * 2;
-            let old = std::mem::replace(&mut table, (0..n).map(|_| Vec::new()).collect());
-            for item in old.into_iter().flatten() {
-                let i = spread(&item) & (n - 1);
-                table[i].push(item);
-            }
+            double(&mut table, spread);
         }
     }
     table.into_iter().flatten().collect()
+}
+
+/// `HashMap.resize`: doubles the table, splitting each bucket in order.
+fn double<T>(table: &mut Vec<Vec<T>>, spread: impl Fn(&T) -> usize) {
+    let n = table.len() * 2;
+    let old = std::mem::replace(table, (0..n).map(|_| Vec::new()).collect());
+    for item in old.into_iter().flatten() {
+        let i = spread(&item) & (n - 1);
+        table[i].push(item);
+    }
 }
 
 #[cfg(test)]
@@ -269,6 +282,13 @@ mod tests {
         with_dupes.push("tag3".into());
         let ordered = hash_set_order(with_dupes, |s| java_hash(s));
         assert_eq!(ordered, set.iter().cloned().collect::<Vec<_>>());
+        // A 9-node bin in a 16-slot table doubles it before the load factor does.
+        let tags = ["q", "a", "Q", "A", "1", "!", "AB", "AR", "Ab"];
+        let want = ["a", "A", "!", "AB", "Ab", "q", "Q", "1", "AR"];
+        assert_eq!(hash_set_order(tags, |s| java_hash(s)), want);
+        let mut set = HashSetOrder::default();
+        tags.iter().for_each(|t| _ = set.insert(t));
+        assert_eq!(set.iter().map(String::as_str).collect::<Vec<_>>(), want);
         // Entity.entityTags of the mob_command_damage_vibration harness (#15158).
         assert_eq!(
             hash_set_order(["h113_actor", "h113_stationary"], |s| java_hash(s)),
