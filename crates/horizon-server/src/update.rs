@@ -1133,9 +1133,11 @@ mod tests {
 
     #[test]
     fn a_release_from_before_signing_is_picked_with_its_pinned_digest() {
-        if let Some(first) = ASSETS.first() {
-            let pinned = horizon_release_sign::legacy_digest("v2026.10.19", first)
-                .expect("v2026.10.19 is from before signing and has every platform's archive");
+        // A platform whose archive that release never had (ARM64) has no pinned digest to check.
+        if let Some((first, pinned)) = ASSETS
+            .iter()
+            .find_map(|a| horizon_release_sign::legacy_digest("v2026.10.19", a).map(|d| (a, d)))
+        {
             let old = json!({ "tag_name": "v2026.10.19", "assets": [{ "name": first, "browser_download_url": "u" }] });
             let nothing = |_: &str| -> Result<Vec<u8>, String> { Err("404".into()) };
             assert_eq!(pick(&old, nothing, &[]).unwrap().sha256, pinned);

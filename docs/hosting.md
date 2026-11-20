@@ -64,8 +64,8 @@ for Windows includes it), else against the SHA-256 GitHub publishes, and never a
 
 Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Linux on ARM64
 (a Raspberry Pi 5, a Graviton instance) gets the server build, `horizon-server-linux-arm64.tar.gz`, from releases that
-have it. Other systems build from source: `cargo build --release -p horizon-game --bin horizon-client -p
-horizon-server` and keep both programs in one folder.
+have it. On a release without it, and on other systems, build from source: `cargo build --release -p horizon-game
+--bin horizon-client -p horizon-server` and keep both programs in one folder.
 
 On Nix and NixOS, the repository's flake builds `horizon-server` from source and has a
 `services.horizon-server` module: [nix.md](nix.md).
